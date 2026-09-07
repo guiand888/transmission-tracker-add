@@ -4,7 +4,9 @@
 
 Applies a public tracker list to every torrent in Transmission, on a schedule, from one small container.
 
-> **This is a fork of [AndrewMarchukov/tracker-add](https://github.com/AndrewMarchukov/tracker-add), which has been abandoned since 2022.** Its published image `andrewmhub/transmission-tracker-add` is a frozen 2022 build on Alpine 3.15, end-of-life since 2023-11-01; it logs successes as failures and its tracker-list cache never refreshes, so list updates never arrive. Users diagnosed all of this correctly in the issue tracker and nothing was ever merged. Every file here was written from scratch against Transmission's documented JSON-RPC API — it shares only the environment-variable names (`HOSTPORT`, `TORRENTLIST`, `TR_AUTH`) with upstream, so it drops into an existing deployment. It is not patched upstream code. See [License](#license).
+> **This is a fork of [AndrewMarchukov/tracker-add](https://github.com/AndrewMarchukov/tracker-add), which has been abandoned since 2022.**
+> Its published image `andrewmhub/transmission-tracker-add` is a frozen 2022 build on Alpine 3.15, end-of-life since 2023-11-01; it logs successes as failures and its tracker-list cache never refreshes, so list updates never arrive. Users diagnosed all of this correctly in the issue tracker and nothing was ever merged.
+> Every file in this fork was written from scratch against Transmission's documented JSON-RPC API — it shares only the environment-variable names (`HOSTPORT`, `TORRENTLIST`, `TR_AUTH`) with upstream, so it drops into an existing deployment.
 
 ## Table of Contents
 
@@ -36,7 +38,9 @@ docker compose build --pull --no-cache && docker compose up -d   # same version,
 
 ## Usage
 
-`docker compose logs -f tracker-add`. The container reports healthy as long as a pass has *started* within roughly `3 × INTERVAL`; a Transmission outage is logged and retried on its own, and does not make the container unhealthy — flapping the container because the thing it depends on is temporarily down would make the outage worse, not better.
+`docker compose logs -f tracker-add`
+
+The container reports healthy as long as a pass has *started* within roughly `3 × INTERVAL`; a Transmission outage is logged and retried on its own, and does not make the container unhealthy.
 
 Run once against production without changing anything by setting `DRY_RUN=true`: every read still happens (list fetch, torrent enumeration), and every intended change is logged, but no `torrent-set` call is ever sent — enforced twice, both in the function that would build the request and, as a backstop, in the RPC transport itself. Note that a dry run still writes its own local state (the watermark, the reconcile memo) to `STATE_DIR`, so if you plan to dry-run and then run for real, use a separate `STATE_DIR` or a throwaway container for the dry run.
 
