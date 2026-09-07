@@ -1,149 +1,113 @@
-# Get more trackers, get more seeders,  get more peers transmission 
-[![Docker Image CI](https://github.com/AndrewMarchukov/tracker-add/actions/workflows/docker-image.yml/badge.svg?branch=docker)](https://github.com/AndrewMarchukov/tracker-add/actions/workflows/docker-image.yml) [![](https://images.microbadger.com/badges/version/andrewmhub/transmission-tracker-add.svg)](https://microbadger.com/images/andrewmhub/transmission-tracker-add) ![Docker Pulls](https://img.shields.io/docker/pulls/andrewmhub/transmission-tracker-add.svg) ![GitHub top language](https://img.shields.io/github/languages/top/AndrewMarchukov/tracker-add.svg) ![Docker Image Size (tag)](https://img.shields.io/docker/image-size/andrewmhub/transmission-tracker-add/latest)
+# transmission-tracker-add
 
-See no peers,seeds for some torrent(s)? Add more tracker(s) for Transmission
+[![standard-readme compliant](https://img.shields.io/badge/readme%20style-standard-brightgreen.svg?style=flat-square)](https://github.com/RichardLitt/standard-readme)
 
-This script automatically checks new torrents and adds trackers
+Applies a public tracker list to every torrent in Transmission, on a schedule, from one small container.
 
-<details>
-  <summary>FAQ:</summary>
+> **This is a fork of [AndrewMarchukov/tracker-add](https://github.com/AndrewMarchukov/tracker-add), which has been abandoned since 2022.** Its published image `andrewmhub/transmission-tracker-add` is a frozen 2022 build on Alpine 3.15, end-of-life since 2023-11-01; it logs successes as failures and its tracker-list cache never refreshes, so list updates never arrive. Users diagnosed all of this correctly in the issue tracker and nothing was ever merged. Every file here was written from scratch against Transmission's documented JSON-RPC API — it shares only the environment-variable names (`HOSTPORT`, `TORRENTLIST`, `TR_AUTH`) with upstream, so it drops into an existing deployment. It is not patched upstream code. See [License](#license).
 
-```
-Q: Requirements?
-A: curl, transmission-remote or\and transmission-cli
+## Table of Contents
 
-Q: How often does this check for updates for new trackers?
-A: Only when adding new torrent in transmission and only active torrents and gap 25 seconds
+- [Background](#background)
+- [Install](#install)
+- [Usage](#usage)
+- [Maintainers](#maintainers)
+- [Acknowledgements](#acknowledgements)
+- [Contributing](#contributing)
+- [License](#license)
 
-Q: Can I add tracker to a remote server？
-A: Yes, host=host:port or host=http(s?)://host:port/transmission/
-```
-</details>
+## Background
 
-<details>
-  <summary>Changelog</summary>
+Transmission does not refresh trackers on torrents you already have. This container talks to Transmission's JSON-RPC API on an interval and adds any tracker from your list that a torrent is missing.
 
-```
-Mar 10, 2020
-avoid add trackers for private torrents
+What this fork fixes, relative to the abandoned image:
 
-Mar 27, 2019
-add tracker-add-auto-router.sh script for routers
-now tracker file saved in tmp directory until update web source
-new exception in "Get list of active torrents", helps to avoid fully loaded torrents
-cosmetic fixes
+- **The tracker list actually refreshes.** Upstream's cache-freshness check compared a `curl -sI` `Content-Length` header using a case-sensitive match; `raw.githubusercontent.com` serves it lowercase over HTTP/2, so the check always failed and the cache silently froze after its first fetch — for months, in production. This fork uses a conditional `GET` with `ETag`/`If-None-Match` and validates every fetch before using it.
+- **Logging is no longer inverted.** Upstream's published `docker` branch had a `grep` with its sense reversed and logged every successful tracker add as a failure (see upstream issue [#28](https://github.com/AndrewMarchukov/tracker-add/issues/28)).
+- **No text scraping, no header row.** Upstream parsed `transmission-remote -l`'s human-readable table, and its filter let the header row through as a torrent, spamming "No torrent specified!" once per tracker for a phantom torrent (upstream [#24](https://github.com/AndrewMarchukov/tracker-add/issues/24), [#25](https://github.com/AndrewMarchukov/tracker-add/issues/25)). This fork talks JSON-RPC directly and parses typed fields with `jq`; there is no table and no header row to mistake for data.
+- **Nothing is missed regardless of how long a pass takes.** Upstream compared a formatted date string against "now" and "one minute ago" at minute granularity — a slow pass, or one that started a few seconds late, could miss a torrent entirely. This fork tracks an epoch **watermark** from the daemon's own clock, so a slow pass just runs late, never incompletely; a periodic **reconcile** sweep additionally self-heals anything a torrent's trackers are still missing, including torrents added while the container was down.
+- **No stale locks.** Upstream's per-torrent lock file was only removed at the end of a successful run, so a killed process left a torrent permanently unprocessed (upstream [#27](https://github.com/AndrewMarchukov/tracker-add/issues/27)). This fork is fully sequential and needs no lock files at all.
+- **Private torrents are protected by construction.** Upstream's private-torrent skip (added to its `master` branch, never to the `docker` branch the published image is built from) matched a hand-maintained, empty-by-default hostname allowlist. This fork reads Transmission's own `isPrivate` flag and skips private torrents unconditionally by default — no allowlist to forget to populate.
+- **`TORRENTLIST` supports multiple lists,** correctly split on whitespace or newlines (see `TRACKER_LISTS` below), merged and deduplicated.
+- **Alpine 3.15 → 3.24**, and `transmission-remote` is gone entirely — the image needs only `bash`, `curl`, `jq`, `ca-certificates` and `tzdata`.
+- **Hardened by default:** fixed non-root user `1001:1001`, read-only root filesystem, all Linux capabilities dropped, `no-new-privileges`, a PID limit, and a liveness healthcheck that doesn't depend on Transmission being reachable.
+- **Docker only.** Upstream's systemd unit, router script and manual script are gone. There is one supported way to run this.
 
-Feb 22, 2019
-add feature connection to host
+## Install
 
-May 27, 2018
-wait new torrents 25 sec
+You need Docker (or Podman) with Compose. Nothing is published to a container registry — Compose builds the image from this repository at a Git tag:
 
-May 26, 2018
-Change systemd policy
-CPUSchedulingPolicy=idle
-Nice=19
-```
-</details>
-
-#### Choose your destiny:
-
-[Docker way](https://github.com/AndrewMarchukov/tracker-add#-docker-way)
-
-[Systemd way](https://github.com/AndrewMarchukov/tracker-add#-systemd-way)
-
-[Simple way (for routers)](https://github.com/AndrewMarchukov/tracker-add#-simple-way-for-routers)
-
-## Installation and usage
-
-#### * Docker way
-
-Take image `docker pull andrewmhub/transmission-tracker-add`
-
-```docker run --net=host -d -e HOSTPORT=localhost:9091 -e TR_AUTH=user:password --name=transmission-tracker-add andrewmhub/transmission-tracker-add:latest```
-
-if you need another torrent tracker list then use docker run env
-
-`-e TORRENTLIST=https://raw.githubusercontent.com/user/trackerslist/master/mylist.txt`
-
-you have transmission daemon in docker then read [Docker Documentation Network](https://docs.docker.com/network/)
-
-
-#### * Systemd way
-
-Download script and make it executable:
-
-Edit settings.json for transmission set rpc-enabled, rpc-username and rpc-password
-
-```
-wget --no-check-certificate -O /opt/bin/add-trackers-auto.sh https://raw.githubusercontent.com/AndrewMarchukov/tracker-add/master/tracker-add-auto.sh
-wget --no-check-certificate -O /etc/systemd/system/transmission-tracker-add.service https://raw.githubusercontent.com/AndrewMarchukov/tracker-add/master/transmission-tracker-add.service
-chmod +x /opt/bin/add-trackers-auto.sh
-```
-Set user and password in add-trackers-auto.sh
-```
-systemctl daemon-reload
-systemctl enable transmission-tracker-add.service
-systemctl start transmission-tracker-add.service
-
-systemctl status transmission-tracker-add.service
-● transmission-tracker-add.service - transmission tracker add
-   Loaded: loaded (/etc/systemd/system/transmission-tracker-add.service; enabled; vendor preset: enabled)
-   Active: active (running) since; 0 days ago
- Main PID: 19102 (add_trackers_au)
-   CGroup: /system.slice/transmission-tracker-add.service
-           ├─19102 /bin/bash /opt/bin/add-trackers-auto.sh
-           └─31204 sleep 5
-
+```sh
+curl -fsSLO https://raw.githubusercontent.com/guiand888/transmission-tracker-add/main/compose.yaml
+curl -fsSL https://raw.githubusercontent.com/guiand888/transmission-tracker-add/main/.env.example -o .env
+$EDITOR .env          # set HOSTPORT and TR_AUTH
+docker compose up -d
 ```
 
-#### * Simple way (for routers)
+To move to a new release, or to pick up an Alpine security patch on the same release:
 
-Requirements: curl, transmission-remote
-
-Download script and make it executable:
-
-Edit settings for transmission set rpc-enabled, rpc-username, rpc-password and your pt trackers
-
-```
-wget --no-check-certificate -O tracker-add-auto-router.sh https://raw.githubusercontent.com/AndrewMarchukov/tracker-add/master/tracker-add-auto-router.sh
-chmod +x tracker-add-auto-router.sh
-```
-Set user and password in tracker-add-auto-router.sh
-
-```
-./tracker-add-auto-router.sh &
-```
-or
-```
-nohup ./tracker-add-auto-router.sh </dev/null >/var/log/tracker-add-auto.log 2>&1 &
-```
-or
-```
-screen -d -m -S tracker-add-auto path/to/tracker-add-auto-router.sh
+```sh
+TRACKER_ADD_TAG=v1.1.0 docker compose up -d --build     # new version
+docker compose build --pull --no-cache && docker compose up -d   # same version, patched base
 ```
 
+## Usage
 
+`docker compose logs -f tracker-add`. The container reports healthy as long as a pass has *started* within roughly `3 × INTERVAL`; a Transmission outage is logged and retried on its own, and does not make the container unhealthy — flapping the container because the thing it depends on is temporarily down would make the outage worse, not better.
 
-### Extra manual script if you need
-Set user and password in manual-tracker-add.sh
+Run once against production without changing anything by setting `DRY_RUN=true`: every read still happens (list fetch, torrent enumeration), and every intended change is logged, but no `torrent-set` call is ever sent — enforced twice, both in the function that would build the request and, as a backstop, in the RPC transport itself. Note that a dry run still writes its own local state (the watermark, the reconcile memo) to `STATE_DIR`, so if you plan to dry-run and then run for real, use a separate `STATE_DIR` or a throwaway container for the dry run.
 
-Run manual script to add some more trackers for active torrents:
+| Variable | Default | Meaning |
+| --- | --- | --- |
+| `HOSTPORT` | `localhost:9091` | `host:port` of Transmission's RPC endpoint, as seen from inside this container. |
+| `RPC_URL_PATH` | `/transmission/rpc/` | RPC path, if you have moved it. |
+| `RPC_TIMEOUT` | `10` | `curl --max-time`, seconds. Keep this below your `stop_grace_period` — a signal during a slow RPC call only returns once the call times out. |
+| `RPC_CONNECT_TIMEOUT` | `5` | `curl --connect-timeout`, seconds. |
+| `RPC_RETRIES` | `3` | Retries per RPC call before giving up on that call for this pass. |
+| `TR_AUTH` | *(empty)* | Transmission RPC credentials as `user:password`. Visible in `/proc/<pid>/environ` and `docker inspect` for the life of the container — prefer `TR_AUTH_FILE` below where you can. |
+| `TR_AUTH_FILE` | *(unset)* | Path to a file containing `user:password`. Takes precedence over `TR_AUTH`. |
+| `TR_USER_FILE` / `TR_PASS_FILE` | *(unset)* | Paths to files containing the username and password separately (e.g. two Docker secrets). Takes precedence over everything else. |
+| `TRACKER_LISTS` | *(unset)* | One or more tracker-list URLs, separated by whitespace or newlines (a YAML block scalar works well here). Merged and deduplicated. |
+| `TORRENTLIST` | ngosang `trackers_all.txt` | Deprecated alias for `TRACKER_LISTS`, kept for drop-in compatibility with the upstream image. Still honoured, with a one-time warning at startup. Used only if `TRACKER_LISTS` is unset. |
+| `LIST_REFRESH_INTERVAL` | `3600` | Seconds between tracker-list re-fetches. |
+| `INTERVAL` | `60` | Seconds between scan passes. |
+| `RECONCILE_INTERVAL` | `21600` (6h) | Seconds between reconcile sweeps. |
+| `RECONCILE_ON_START` | `true` | Force a reconcile on the container's first pass, so a fresh container backfills coverage instead of only catching new torrents. |
+| `RECONCILE_SCOPE` | `active` | `active` reconciles torrents that are queued/downloading/queued-to-seed/seeding; `all` reconciles every public torrent regardless of status. |
+| `RECONCILE_CHUNK` | `200` | How many torrents' tracker lists to fetch per RPC call during reconcile. |
+| `SKIP_PRIVATE` | `true` | Never add public trackers to a torrent Transmission reports as private. Not configurable to `false` from a "you probably shouldn't" standpoint — it is, deliberately, just an environment variable, not a design ideal. |
+| `DRY_RUN` | `false` | Log intended changes; send no mutating RPC call. See above. |
+| `LOG_LEVEL` | `INFO` | `ERROR`, `WARN`, `INFO` or `DEBUG`. |
+| `STATE_DIR` | `/tmp/ttaa` | Where the tracker-list cache, watermark, reconcile memo and heartbeat live. Must be on writable storage — under `read_only: true` that means a `tmpfs` mount, which is cold on every restart by design. |
+| `HEALTH_MAX_AGE` | `3 × INTERVAL + 60` | Seconds since the last heartbeat before the healthcheck reports unhealthy. |
+| `TZ` | `UTC` | Timezone for log timestamps. |
 
-```
-/opt/bin # ./manual-tracker-add.sh
-URL for https://hastebin.com/raw/bererufibu
-Adding trackers for Film.HDRip.AVC.mkv...
+`PUID` and `PGID` from the upstream image are gone. The container mounts no volumes, so remapping the runtime UID achieved nothing except forcing a root entrypoint to do the remapping from. It runs as `1001:1001`, fixed at build time.
 
-######################################################################## 100,0%
-* http://tracker.dutchtracking.nl:80/announce... failed.
-* http://tracker.edoardocolombo.eu:6969/announce... failed.
-* http://tracker.ex.ua:80/announce... failed.
-* http://tracker.kicks-ass.net:80/announce... failed.
-* http://tracker.mg64.net:6881/announce... done.
-* http://tracker.tfile.me/announce... failed.
-* http://tracker1.wasabii.com.tw:6969/announce... done.
-* http://tracker2.itzmx.com:6961/announce... done.
-```
+### Behind a VPN sidecar
 
-Don't be confused with `failed` message. In most cases, it means tracker(s) already added and/or exists in current torrent.
+To route Transmission and this container through the same VPN container, give this service `network_mode: service:<your-vpn-service>` and set `HOSTPORT=localhost:9091`. In that mode Docker rejects `networks`, `ports`, `hostname`, `dns` and `extra_hosts` on this service — configure them on the VPN service instead. Every hardening option above stays compatible.
+
+## Maintainers
+
+[@guiand888](https://github.com/guiand888)
+
+## Acknowledgements
+
+Upstream contributors who diagnosed these exact bugs correctly, in public, and were never merged. Their reports are why this rewrite knew what to fix:
+
+- [@arichiardi](https://github.com/arichiardi) — the header row being parsed as a torrent, and stale lock-file cleanup ([#25](https://github.com/AndrewMarchukov/tracker-add/issues/25), [#27](https://github.com/AndrewMarchukov/tracker-add/issues/27))
+- [@cfrost](https://github.com/cfrost) — the inverted `grep` on the `docker` branch that the published image is built from ([#28](https://github.com/AndrewMarchukov/tracker-add/issues/28))
+- [@monyxie](https://github.com/monyxie) — the tracker list being fetched once and never refreshed, and the header row
+- [@L-ios](https://github.com/L-ios) — non-portable `date` usage
+- [@dlenski](https://github.com/dlenski) — fetch-once, and unquoting the tracker-list variable to support more than one URL
+
+## Contributing
+
+Issues and pull requests are welcome. For anything larger than a small fix, please open an issue first to discuss the approach. Bugs in the upstream project are not tracked here — see [Acknowledgements](#acknowledgements) for links to the relevant upstream issues instead.
+
+## License
+
+[AGPL-3.0-or-later](LICENSE) © 2026 Guillaume Andre.
+
+The upstream repository this is forked from carries no licence in any commit — GitHub's licence API reports none — which under copyright's default means all rights reserved. None of it is redistributed here. The first commit on this fork's `main` branch deletes every upstream file, and every file added after it was written from scratch against Transmission's documented JSON-RPC interface; `git log -p` shows no commit transforming an upstream file into a new one. The AGPL-3.0-or-later grant above covers those files only. Commits dated before that deletion commit are upstream's own history, retained because GitHub forks share a commit graph — they are not offered under this licence and no permission to use them is granted or implied.

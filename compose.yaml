@@ -1,0 +1,57 @@
+# Reference standalone stack for guiand888/transmission-tracker-add.
+#
+# No image is published to any registry. Compose builds it, from this
+# repository, at the Git tag pinned below.
+#
+#   docker compose up -d                              # first run
+#   TRACKER_ADD_TAG=v1.1.0 docker compose up -d --build   # move to a new release
+#   docker compose build --pull --no-cache && docker compose up -d  # same
+#                                                       # release, refreshed Alpine base
+#
+# This service needs to reach Transmission's RPC port. Pick one:
+#   a) attach both to the same network and set HOSTPORT=transmission:9091
+#      (the default below), or
+#   b) run it in another container's network namespace with
+#      `network_mode: service:<vpn-container>` and set
+#      HOSTPORT=localhost:9091 (see README, "Behind a VPN sidecar").
+name: transmission-tracker-add
+
+services:
+  tracker-add:
+    build:
+      context: https://github.com/guiand888/transmission-tracker-add.git#${TRACKER_ADD_TAG:-v1.0.0}
+      dockerfile: Dockerfile
+      args:
+        TRACKER_ADD_VERSION: ${TRACKER_ADD_TAG:-v1.0.0}
+    # The tag is part of the image name on purpose: bumping TRACKER_ADD_TAG
+    # then forces a rebuild instead of Compose silently reusing whatever
+    # image already happens to be tagged locally.
+    image: transmission-tracker-add:${TRACKER_ADD_TAG:-v1.0.0}
+    container_name: transmission-tracker-add
+    environment:
+      - HOSTPORT=${HOSTPORT:-transmission:9091}
+      - TORRENTLIST=${TORRENTLIST:-https://raw.githubusercontent.com/ngosang/trackerslist/master/trackers_all.txt}
+      - TR_AUTH=${TR_AUTH:-}
+      - INTERVAL=${INTERVAL:-60}
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
+      - TZ=${TZ:-UTC}
+    # Healthcheck is inherited from the Dockerfile's HEALTHCHECK (heartbeat
+    # freshness, window = 3x INTERVAL + 60s). Not repeated here: a duplicate
+    # would drift from the image the first time that logic changes.
+    user: "1001:1001"
+    init: true
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,nodev,size=16m
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    pids_limit: 64
+    mem_limit: 128m
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+    restart: unless-stopped
