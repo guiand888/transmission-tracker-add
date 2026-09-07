@@ -739,7 +739,9 @@ SLEEP_PID=""
 on_signal() {
   RUNNING=0
   log_info "signal received, shutting down"
-  [[ -n "$SLEEP_PID" ]] && kill "$SLEEP_PID" 2>/dev/null || true
+  if [[ -n "$SLEEP_PID" ]]; then
+    kill "$SLEEP_PID" 2>/dev/null || true
+  fi
 }
 
 # A foreground `sleep` does not yield to a trap; `wait` does. This is the
