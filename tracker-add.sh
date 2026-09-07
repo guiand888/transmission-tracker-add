@@ -447,6 +447,13 @@ refresh_lists() {
   for f in "$STATE_DIR"/lists/*.txt; do
     [[ -e "$f" ]] || continue
     cat "$f" >> "$merged"
+    # Guarantee a newline between files regardless of whether the source
+    # itself ends in one — a source missing a trailing newline would
+    # otherwise fuse its last tracker with the next file's first tracker
+    # into one line. That fused string still starts with a valid scheme,
+    # so it would pass SEND_SCHEME_RE and reach the daemon as one garbage
+    # announce URL, silently costing one real tracker from each file.
+    printf '\n' >> "$merged"
   done
 
   grep -E "$SEND_SCHEME_RE" "$merged" | sort -u > "$STATE_DIR/merged.txt.sorted" || true

@@ -19,14 +19,14 @@ name: transmission-tracker-add
 services:
   tracker-add:
     build:
-      context: https://github.com/guiand888/transmission-tracker-add.git#${TRACKER_ADD_TAG:-v1.0.0}
+      context: https://github.com/guiand888/transmission-tracker-add.git#${TRACKER_ADD_TAG:-v1.0.1}
       dockerfile: Dockerfile
       args:
-        TRACKER_ADD_VERSION: ${TRACKER_ADD_TAG:-v1.0.0}
+        TRACKER_ADD_VERSION: ${TRACKER_ADD_TAG:-v1.0.1}
     # The tag is part of the image name on purpose: bumping TRACKER_ADD_TAG
     # then forces a rebuild instead of Compose silently reusing whatever
     # image already happens to be tagged locally.
-    image: transmission-tracker-add:${TRACKER_ADD_TAG:-v1.0.0}
+    image: transmission-tracker-add:${TRACKER_ADD_TAG:-v1.0.1}
     container_name: transmission-tracker-add
     environment:
       - HOSTPORT=${HOSTPORT:-transmission:9091}
